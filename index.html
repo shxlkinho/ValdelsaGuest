@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2F6B57">
+  <title>Guest Concierge</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: {
+      fontFamily: { display: ['"Bricolage Grotesque"', 'sans-serif'], sans: ['"DM Sans"', 'sans-serif'] },
+      colors: { ink: '#17211D', cypress: '#2F6B57', mist: '#DCE5E0', paper: '#F3F5F4', sun: '#E0A83A' }
+    } } };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+</head>
+<body class="bg-paper text-ink font-sans antialiased min-h-screen">
+  <main id="app" class="mx-auto max-w-5xl px-4 pb-16 pt-[max(1.5rem,env(safe-area-inset-top))]">
+    <p id="status" class="py-24 text-center text-ink/60" role="status">Caricamento in corso…</p>
+  </main>
+
+<script>
+/* ============ CONFIG SUPABASE ============ */
+const SUPABASE_URL = 'https://TUO-PROGETTO.supabase.co';
+const SUPABASE_ANON_KEY = 'LA_TUA_ANON_PUBLIC_KEY';
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ============ HELPER ============ */
+const $app = document.getElementById('app');
+const esc = (s = '') => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const safeUrl = u => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : ''; } catch { return ''; } };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TIPI = { ristorante: 'Ristorante', tour: 'Tour', evento: 'Evento' };
+
+function showMessage(title, text) {
+  $app.innerHTML = `<div class="py-24 text-center"><h1 class="font-display text-2xl font-semibold">${esc(title)}</h1><p class="mt-2 text-ink/70">${esc(text)}</p></div>`;
+}
+
+function hostLink(contatto = '') {
+  const c = contatto.trim();
+  if (!c) return '';
+  const href = c.includes('@') ? `mailto:${c}` : /^https?:/i.test(c) ? safeUrl(c) : `tel:${c.replace(/[^\d+]/g, '')}`;
+  return href ? `<a href="${esc(href)}" class="inline-flex min-h-11 items-center rounded-full border border-cypress px-5 font-semibold text-cypress hover:bg-mist focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cypress">Contatta l'host</a>` : '';
+}
+
+/* ============ DATI ============ */
+async function loadData(id) {
+  const [s, p] = await Promise.all([
+    db.from('strutture').select('*').eq('id', id).single(),
+    db.from('strutture_partner').select('ordine, partner_locali(*)').eq('struttura_id', id).order('ordine')
+  ]);
+  if (s.error) throw s.error;
+  if (p.error) throw p.error;
+  const partner = p.data.map(r => r.partner_locali).filter(Boolean);
+  return { struttura: s.data, partner };
+}
+
+/* ============ RENDER ============ */
+function renderStruttura(s) {
+  const wifi = s.wifi_ssid ? `
+    <div class="mt-6 rounded-2xl bg-white/10 p-4">
+      <p class="text-sm text-white/70">Wi-Fi</p>
+      <p class="mt-1 font-display text-xl font-semibold break-all">${esc(s.wifi_ssid)}</p>
+      ${s.wifi_pass ? `
+      <div class="mt-3 flex items-center justify-between gap-3">
+        <div class="min-w-0"><p class="text-sm text-white/70">Password</p><p class="font-mono text-lg break-all">${esc(s.wifi_pass)}</p></div>
+        <button id="copy-wifi" data-pass="${esc(s.wifi_pass)}" class="min-h-11 shrink-0 rounded-full bg-white px-5 font-semibold text-cypress focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white">Copia password</button>
+      </div>` : ''}
+    </div>` : '';
+
+  const regole = s.istruzioni_checkin ? `
+    <section class="mt-4 rounded-3xl bg-white p-6">
+      <h2 class="font-display text-xl font-semibold">Check-in e regole della casa</h2>
+      <p class="mt-3 whitespace-pre-line leading-relaxed text-ink/80">${esc(s.istruzioni_checkin)}</p>
+      <div class="mt-5 flex flex-wrap items-center gap-3">${hostLink(s.contatto_host)}</div>
+    </section>` : '';
+
+  return `
+    <header class="rounded-3xl bg-cypress p-6 text-white">
+      <p class="text-sm text-white/70">Benvenuto a</p>
+      <h1 class="font-display text-3xl font-bold leading-tight sm:text-4xl">${esc(s.nome)}</h1>
+      ${s.indirizzo ? `<p class="mt-2 text-white/80">${esc(s.indirizzo)}</p>` : ''}
+      ${wifi}
+    </header>${regole}`;
+}
+
+function renderPartner(list) {
+  if (!list.length) return '';
+  const cards = list.map(p => {
+    const img = safeUrl(p.immagine_url);
+    const link = safeUrl(p.link_prenotazione);
+    return `
+    <article class="flex flex-col overflow-hidden rounded-3xl bg-white">
+      ${img ? `<img src="${esc(img)}" alt="" loading="lazy" class="h-44 w-full object-cover">` : `<div class="h-44 bg-mist"></div>`}
+      <div class="flex flex-1 flex-col p-5">
+        <p class="text-sm font-semibold text-cypress">${esc(TIPI[p.tipo] || p.tipo)}</p>
+        <h3 class="mt-1 font-display text-xl font-semibold">${esc(p.nome)}</h3>
+        ${p.descrizione ? `<p class="mt-2 leading-relaxed text-ink/75">${esc(p.descrizione)}</p>` : ''}
+        ${p.codice_sconto ? `<p class="mt-4 rounded-xl bg-sun/20 px-3 py-2 text-sm">Codice sconto: <strong class="font-mono">${esc(p.codice_sconto)}</strong></p>` : ''}
+        ${link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer" class="mt-auto inline-flex min-h-11 items-center justify-center rounded-full bg-ink px-5 pt-0 font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink" style="margin-top:1.25rem">Prenota</a>` : ''}
+      </div>
+    </article>`;
+  }).join('');
+  return `
+    <section class="mt-10">
+      <h2 class="font-display text-2xl font-semibold">Cosa fare e dove mangiare</h2>
+      <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">${cards}</div>
+    </section>`;
+}
+
+function render({ struttura, partner }, offline = false) {
+  $app.innerHTML =
+    (offline ? `<p class="mb-3 rounded-xl bg-sun/20 px-4 py-2 text-sm">Sei offline: stai vedendo l'ultima versione salvata.</p>` : '') +
+    renderStruttura(struttura) + renderPartner(partner);
+}
+
+/* ============ COPIA WI-FI ============ */
+$app.addEventListener('click', async e => {
+  const btn = e.target.closest('#copy-wifi');
+  if (!btn) return;
+  const pass = btn.dataset.pass;
+  try { await navigator.clipboard.writeText(pass); }
+  catch {
+    const t = Object.assign(document.createElement('textarea'), { value: pass });
+    document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
+  }
+  btn.textContent = 'Copiata!';
+  setTimeout(() => (btn.textContent = 'Copia password'), 2000);
+});
+
+/* ============ AVVIO ============ */
+(async function init() {
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id || !UUID_RE.test(id)) return showMessage('Link non valido', 'Scansiona di nuovo il QR code che trovi in camera.');
+  const cacheKey = `concierge:${id}`;
+  try {
+    const data = await loadData(id);
+    try { localStorage.setItem(cacheKey, JSON.stringify(data)); } catch {}
+    render(data);
+  } catch (err) {
+    console.error(err);
+    let cached = null;
+    try { cached = JSON.parse(localStorage.getItem(cacheKey)); } catch {}
+    if (cached) render(cached, true);
+    else showMessage('Struttura non trovata', 'Controlla il link oppure contatta il tuo host.');
+  }
+})();
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
